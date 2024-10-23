@@ -74,7 +74,7 @@ The project is divided into the following key steps:
 
 After training the XGBoost model on the training data and evaluating it on the validation set, the model achieves strong performance across various metrics. The evaluation metrics include:
 - **Accuracy**: Measures the percentage of correctly predicted transactions.
-- **AUC (Area Under Curve)**: Reflects the model's ability to distinguish between fraud and non-fraud cases.
+- **AUC (Area Under Curve) - 91%**: Reflects the model's ability to distinguish between fraud and non-fraud cases.
 - **Precision, Recall, and F1-score**: Provide a detailed look at the model’s prediction performance, especially for fraudulent transactions.
 
 ## Future Work
