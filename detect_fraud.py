@@ -628,7 +628,7 @@ class applyModel():
 
 
 # 3.Apply functions on dataset as needed
-# Read .csv's
+# Read .csv's, replace file paths as needed
 train_id_df = pd.read_csv(r"ieee-fraud-detection\train_identity.csv")
 train_transaction_df = pd.read_csv(r"ieee-fraud-detection\train_transaction.csv")
 test_id_df = pd.read_csv(r"ieee-fraud-detection\test_identity.csv")
