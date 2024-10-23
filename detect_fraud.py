@@ -626,6 +626,7 @@ class applyModel():
 
     return submission
 
+
 # 3.Apply functions on dataset as needed
 # Read .csv's
 train_id_df = pd.read_csv(r"ieee-fraud-detection\train_identity.csv")
