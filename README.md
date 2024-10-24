@@ -16,7 +16,7 @@ Imagine you're at the grocery store, buying everything needed for a party, only 
 
 This project seeks to improve the balance between fraud detection accuracy and the user experience. By leveraging advanced machine learning models and data science techniques, the goal is to reduce false alarms while ensuring security for millions of consumers.
 
-In this competition, participants will benchmark machine learning models using Vesta's dataset, which includes a variety of features ranging from device information to transaction data. Through this process, participants will aim to create new features, reduce dimensionality, and fine-tune models to improve fraud detection.
+In this competition, I applied benchmark machine learning models using Vesta's dataset, which includes a variety of features ranging from device information to transaction data. Through this process, I aim to create new features, reduce dimensionality, and fine-tune models to improve fraud detection.
 
 ## Dataset
 
