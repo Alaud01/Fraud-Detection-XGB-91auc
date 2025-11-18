@@ -1,0 +1,26 @@
+# VAE-Based Synthetic Fraud Data Generator Requirements
+# =====================================================
+# Install with: pip install -r vae_requirements.txt
+
+# Core Dependencies
+numpy>=1.21.0
+pandas>=1.3.0
+matplotlib>=3.4.0
+seaborn>=0.11.0
+scipy>=1.7.0
+
+# Machine Learning
+scikit-learn>=1.0.0
+
+# Deep Learning - PyTorch
+# For CPU installation:
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Note: For GPU support (CUDA), install PyTorch separately:
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+
+# Additional Dependencies (if not already installed)
+xgboost>=1.6.0  # For model training
+lightgbm>=3.3.0  # Optional, for comparison
+
