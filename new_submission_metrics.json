@@ -1,0 +1,17 @@
+{
+  "accuracy": 0.966546753582786,
+  "precision": 0.6920230263157895,
+  "recall": 0.8693181818181818,
+  "f1_score": 0.7706043956043956,
+  "roc_auc": 0.9749336265054999,
+  "balanced_accuracy": 0.9212918486835968,
+  "matthews_corrcoef": 0.7585125273072365,
+  "cohen_kappa": 0.7528128919520503,
+  "training_samples": 479234,
+  "validation_samples": 119809,
+  "synthetic_samples": 18596,
+  "original_samples": 590540,
+  "combined_samples": 599043,
+  "epoch_used": 50,
+  "model_type": "ema"
+}
