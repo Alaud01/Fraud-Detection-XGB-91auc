@@ -757,6 +757,17 @@ def main():
         y_train_combined
     )
 
+    # Save the trained model
+    print("\nStep 8b: Saving trained model...")
+    save_dir = Path("xgb_saved")
+    save_dir.mkdir(exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    model_path = save_dir / f"xgb_{timestamp}.json"
+
+    xgbModel_combined.save_model(str(model_path))
+    print(f"  ✓ Model saved to {model_path}")
+
     # Step 9: Generate predictions and save submission
     print("\nStep 9: Generating predictions with retrained model...")
     # Predict probabilities
