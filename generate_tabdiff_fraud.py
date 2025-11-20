@@ -153,7 +153,7 @@ def prepare_tabdiff_data(fraud_df, output_dir, dataname='fraud_data'):
     
     return info_path, data_dir
 
-def update_tabdiff_config(config_path, steps=50, epochs=None):
+def update_tabdiff_config(config_path, steps=1, epochs=None):
     """Update TabDiff config for quick training."""
     try:
         import tomli_w
@@ -167,7 +167,7 @@ def update_tabdiff_config(config_path, steps=50, epochs=None):
                 config = toml.load(f)
             
             config['train']['main']['steps'] = steps
-            config['train']['main']['check_val_every'] = 10
+            config['train']['main']['check_val_every'] = 1
             config['train']['main']['batch_size'] = 512
             config['diffusion_params']['num_timesteps'] = 5
             
@@ -191,7 +191,7 @@ def update_tabdiff_config(config_path, steps=50, epochs=None):
     
     # Minimize training steps for quick training
     config['train']['main']['steps'] = steps
-    config['train']['main']['check_val_every'] = 10
+    config['train']['main']['check_val_every'] = 1
     config['train']['main']['batch_size'] = 512  # Smaller batch for M4 Mac
     
     # Reduce diffusion timesteps
@@ -289,7 +289,7 @@ def main():
     # Step 8: Update TabDiff config for quick training
     print("\nStep 8: Updating TabDiff config for quick training...")
     config_path = tabdiff_dir / 'tabdiff' / 'configs' / 'tabdiff_configs.toml'
-    if not update_tabdiff_config(config_path, steps=50):
+    if not update_tabdiff_config(config_path, steps=1):
         print("Warning: Could not update config file, continuing with default settings...")
     
     # Step 9: Train TabDiff
