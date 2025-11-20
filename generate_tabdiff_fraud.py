@@ -171,10 +171,15 @@ def update_tabdiff_config(config_path, steps=50, epochs=None):
             config['train']['main']['batch_size'] = 512
             config['diffusion_params']['num_timesteps'] = 5
             
+            # Reduce sample batch size to avoid CUDA OOM
+            if 'sample' not in config:
+                config['sample'] = {}
+            config['sample']['batch_size'] = 256
+            
             with open(config_path, 'w') as f:
                 toml.dump(config, f)
             
-            print(f"Updated config: steps={steps}, batch_size=512, num_timesteps=5")
+            print(f"Updated config: steps={steps}, batch_size=512, sample_batch_size=256, num_timesteps=5")
             return True
         except ImportError:
             print("ERROR: Neither tomli nor toml found. Please install tomli: pip install tomli tomli-w")
@@ -192,10 +197,15 @@ def update_tabdiff_config(config_path, steps=50, epochs=None):
     # Reduce diffusion timesteps
     config['diffusion_params']['num_timesteps'] = 5
     
+    # Reduce sample batch size to avoid CUDA OOM during evaluation/sampling
+    if 'sample' not in config:
+        config['sample'] = {}
+    config['sample']['batch_size'] = 256  # Much smaller for sampling to avoid OOM
+    
     with open(config_path, 'wb') as f:
         tomli_w.dump(config, f)
     
-    print(f"Updated config: steps={steps}, batch_size=512, num_timesteps=5")
+    print(f"Updated config: steps={steps}, batch_size=512, sample_batch_size=256, num_timesteps=5")
     return True
 
 def main():
@@ -287,6 +297,11 @@ def main():
     print("=" * 60)
     original_cwd = os.getcwd()
     python_exe = sys.executable
+    
+    # Set CUDA memory allocation config to reduce fragmentation
+    env = os.environ.copy()
+    env['PYTORCH_ALLOC_CONF'] = 'expandable_segments:True'
+    
     try:
         os.chdir(tabdiff_dir)
         # Run with real-time output streaming
@@ -296,7 +311,8 @@ def main():
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
-            universal_newlines=True
+            universal_newlines=True,
+            env=env
         )
         
         # Stream output in real-time
@@ -360,6 +376,11 @@ def main():
     
     python_exe = sys.executable
     print("=" * 60)
+    
+    # Set CUDA memory allocation config to reduce fragmentation
+    env = os.environ.copy()
+    env['PYTORCH_ALLOC_CONF'] = 'expandable_segments:True'
+    
     process = subprocess.Popen(
         [
             python_exe, 'main.py',
@@ -375,7 +396,8 @@ def main():
         text=True,
         bufsize=1,
         universal_newlines=True,
-        cwd=str(tabdiff_dir)
+        cwd=str(tabdiff_dir),
+        env=env
     )
     
     # Stream output in real-time
