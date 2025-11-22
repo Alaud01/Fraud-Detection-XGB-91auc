@@ -794,12 +794,31 @@ def main():
     
     dfs_to_concat = [train_df_final, adv_df_final]
     if not tabdiff_df.empty:
-        tabdiff_final = tabdiff_df[common_cols].copy()
+        # Select common columns but also ensure sample_weight is included if present in tabdiff_df
+        cols_to_use = [c for c in common_cols if c in tabdiff_df.columns]
+        tabdiff_final = tabdiff_df[cols_to_use].copy()
+        
+        # Explicitly ensure sample_weight is present (it might have been filtered out if not in common_cols)
+        if 'sample_weight' not in tabdiff_final.columns and 'sample_weight' in tabdiff_df.columns:
+            tabdiff_final['sample_weight'] = tabdiff_df['sample_weight']
+        elif 'sample_weight' not in tabdiff_final.columns:
+             tabdiff_final['sample_weight'] = 1.0
+             
         dfs_to_concat.append(tabdiff_final)
         print(f"  Included {len(tabdiff_final)} synthetic TabDiff samples.")
     
     train_df_combined = pd.concat(dfs_to_concat, ignore_index=True)
     print(f"  Combined data shape: {train_df_combined.shape}")
+    
+    # Diagnostic: Check weights
+    if 'sample_weight' in train_df_combined.columns:
+        nan_weights = train_df_combined['sample_weight'].isna().sum()
+        if nan_weights > 0:
+            print(f"  WARNING: Found {nan_weights} NaN weights in combined dataframe. Filling with 1.0.")
+            train_df_combined['sample_weight'] = train_df_combined['sample_weight'].fillna(1.0)
+    else:
+        print("  WARNING: sample_weight column missing in combined dataframe! Creating with default 1.0.")
+        train_df_combined['sample_weight'] = 1.0
 
     # Step 7: Split data and retrain model
     print("\nStep 7: Splitting data and retraining model...")
