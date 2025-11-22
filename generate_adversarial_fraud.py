@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
 """
-Script to generate adversarial fraud examples using TabDiff-inspired noise.
+Script to generate adversarial fraud examples using TabDiff-inspired noise and purify them with TabDiff.
 
 This script:
 1. Loads the IEEE Fraud Detection dataset.
 2. Runs the exact preprocessing pipeline from detect_fraud.ipynb (including PCA and scaling).
 3. Splits the data into Train/Validation sets (Validation set acts as the "test dataset" with known labels).
 4. Loads the latest XGBoost model from xgb_saved/.
-5. Selects 10% of the FRAUD cases from the validation set.
-6. Iteratively adds TabDiff-style Gaussian noise (following the diffusion schedule) until the model predicts the case as "Safe".
-7. Outputs the new adversarial samples and the noise added.
+5. Loads TabDiff model (trained on processed data with PCA) for purification.
+6. Selects 10% of the FRAUD cases from the validation set.
+7. Iteratively adds TabDiff-style Gaussian noise (following the diffusion schedule) until the model predicts the case as "Safe".
+8. Purifies adversarial samples using TabDiff's reverse diffusion process to make them more realistic.
+9. Outputs the adversarial samples and purified adversarial samples (both in processed/PCA space).
 
-Note: Categorical columns are treated as continuous in the encoded/scaled feature space for perturbation, 
-as is common in feature-space adversarial attacks on tabular data models.
+Note: 
+- Adversarial samples are created in processed feature space (with PC columns from PCA).
+- TabDiff purification happens directly in processed space (no inverse PCA needed).
+- Purified samples can be directly evaluated with XGBoost model.
+- Categorical columns are treated as continuous in the encoded/scaled feature space for perturbation.
 """
 
 import os
@@ -402,15 +407,15 @@ def apply_tabdiff_noise(sample, t, sigma_num, cat_indices, unique_vals_list):
     noise = np.random.normal(0, 1, size=len(sample)) * sigma_num
     noisy_sample[~is_cat] += noise[~is_cat]
         
-    # 2. Categorical Noise (Discrete Flipping)
+    # 2. Categorical Noise (Discrete Flipping) - DISABLED as per user request
     # Probability of replacement p = t (bounded [0, 1])
-    move_chance = np.clip(t, 0, 1)
+    # move_chance = np.clip(t, 0, 1)
     
-    for i, col_idx in enumerate(cat_indices):
-        if np.random.random() < move_chance:
-            # Replace with random valid value from the column's distribution
-            valid_vals = unique_vals_list[i]
-            noisy_sample[col_idx] = np.random.choice(valid_vals)
+    # for i, col_idx in enumerate(cat_indices):
+    #     if np.random.random() < move_chance:
+    #         # Replace with random valid value from the column's distribution
+    #         valid_vals = unique_vals_list[i]
+    #         noisy_sample[col_idx] = np.random.choice(valid_vals)
             
     return noisy_sample
 
@@ -526,21 +531,84 @@ def load_tabdiff_model(tabdiff_dir, dataname='fraud_data', exp_name='quick_fraud
     with open(config_path, 'rb') as f:
         config = pickle.load(f)
     
-    # Load data info
-    data_dir = Path(tabdiff_dir) / 'data' / dataname
-    info_path = data_dir / 'info.json'
-    with open(info_path, 'r') as f:
-        info = json.load(f)
+    # First, try to get dimensions from config (saved when model was trained)
+    d_numerical = None
+    categories = None
     
-    # Preprocess to get dimensions
-    X_num, X_cat, categories, d_numerical, num_inverse, int_inverse, cat_inverse = tabdiff_preprocess(
-        str(data_dir), y_only=False, dequant_dist=config['data']['dequant_dist'],
-        int_dequant_factor=config['data']['int_dequant_factor'],
-        task_type=info['task_type'], inverse=True
-    )
-    categories = np.array(categories)
+    if 'unimodmlp_params' in config and 'd_numerical' in config['unimodmlp_params']:
+        d_numerical = config['unimodmlp_params']['d_numerical']
+        categories_list = config['unimodmlp_params'].get('categories', [])
+        # categories in config are +1 (for padding), so subtract 1
+        categories = np.array([c - 1 for c in categories_list])
+        print(f"Using dimensions from config: d_numerical={d_numerical}, categories={categories}")
     
-    # Build model
+    # If not in config, infer from checkpoint
+    if d_numerical is None:
+        print(f"Loading checkpoint to infer dimensions: {latest_model}")
+        state_dicts = torch.load(latest_model, map_location=device)
+        
+        # Infer dimensions from checkpoint
+        # The tokenizer weight shape is [total_features, d_token]
+        # total_features = d_numerical + sum(categories)
+        checkpoint_total_features = None
+        checkpoint_d_token = None
+        
+        if 'denoise_fn' in state_dicts:
+            denoise_fn_state = state_dicts['denoise_fn']
+            # Look for tokenizer weight to infer dimensions
+            for key in denoise_fn_state.keys():
+                if 'tokenizer.weight' in key:
+                    checkpoint_total_features = denoise_fn_state[key].shape[0]
+                    checkpoint_d_token = denoise_fn_state[key].shape[1]
+                    print(f"Checkpoint expects {checkpoint_total_features} total features (d_token={checkpoint_d_token})")
+                    break
+        
+        if checkpoint_total_features is None:
+            print("Warning: Could not infer dimensions from checkpoint. Falling back to raw data dimensions.")
+            # Fallback to raw data
+            data_dir = Path(tabdiff_dir) / 'data' / dataname
+            info_path = data_dir / 'info.json'
+            with open(info_path, 'r') as f:
+                info = json.load(f)
+            
+            X_num, X_cat, categories, d_numerical, num_inverse, int_inverse, cat_inverse = tabdiff_preprocess(
+                str(data_dir), y_only=False, dequant_dist=config['data']['dequant_dist'],
+                int_dequant_factor=config['data']['int_dequant_factor'],
+                task_type=info['task_type'], inverse=True
+            )
+            categories = np.array(categories)
+            
+            # Load checkpoint for weights (already loaded above)
+            # state_dicts is already loaded
+        else:
+            # Infer from checkpoint: for processed data with PCA and binary classification
+            # total_features = d_numerical + 2 (target has 2 classes)
+            # So: d_numerical = checkpoint_total_features - 2
+            d_numerical = checkpoint_total_features - 2  # Subtract target (2 classes for binary)
+            categories = np.array([2])  # Binary classification target
+            print(f"Inferred from checkpoint: d_numerical={d_numerical}, categories={categories}")
+            
+            # Create dummy inverse transforms (not used for processed data)
+            num_inverse = lambda x: x
+            int_inverse = lambda x: x
+            cat_inverse = lambda x: x
+            
+            # Create dummy info
+            info = {'task_type': 'binclass'}
+    else:
+        # Dimensions from config, load checkpoint for weights
+        print(f"Loading checkpoint: {latest_model}")
+        state_dicts = torch.load(latest_model, map_location=device)
+        
+        # Create dummy inverse transforms (not used for processed data)
+        num_inverse = lambda x: x
+        int_inverse = lambda x: x
+        cat_inverse = lambda x: x
+        
+        # Create dummy info
+        info = {'task_type': 'binclass'}
+    
+    # Build model with inferred dimensions
     config['unimodmlp_params']['d_numerical'] = d_numerical
     config['unimodmlp_params']['categories'] = (categories + 1).tolist()
     
@@ -560,8 +628,7 @@ def load_tabdiff_model(tabdiff_dir, dataname='fraud_data', exp_name='quick_fraud
     diffusion.to(device)
     diffusion.eval()
     
-    # Load weights
-    state_dicts = torch.load(latest_model, map_location=device)
+    # Load weights (state_dicts already loaded earlier)
     diffusion._denoise_fn.load_state_dict(state_dicts['denoise_fn'])
     if 'num_schedule' in state_dicts:
         diffusion.num_schedule.load_state_dict(state_dicts['num_schedule'])
@@ -638,7 +705,7 @@ def purify_with_tabdiff(sample_tabdiff_space, diffusion, d_numerical, device='cp
         sigma_cat_next = diffusion.cat_schedule.total_noise(t_next.unsqueeze(0))
         sigma_cat_hat = diffusion.cat_schedule.total_noise(t_hat.unsqueeze(0))
         
-        z_num, z_cat = diffusion.edm_update(
+        z_num, z_cat, _ = diffusion.edm_update(
             z_num, z_cat, num_steps - i - 1,
             t_cur.unsqueeze(0), t_next.unsqueeze(0), t_hat.unsqueeze(0),
             sigma_num_cur, sigma_num_next, sigma_num_hat,
@@ -647,9 +714,9 @@ def purify_with_tabdiff(sample_tabdiff_space, diffusion, d_numerical, device='cp
     
     # Return purified sample
     if has_cat:
-        purified = torch.cat([z_num, z_cat.float()], dim=1).cpu().numpy()[0]
+        purified = torch.cat([z_num, z_cat.float()], dim=1).detach().cpu().numpy()[0]
     else:
-        purified = z_num.cpu().numpy()[0]
+        purified = z_num.detach().cpu().numpy()[0]
     
     return purified
 
@@ -924,68 +991,56 @@ def main():
         print("Step 7: TabDiff Purification of Adversarial Samples...")
         print("=" * 60)
         print("Purifying adversarial samples (with added noise) using TabDiff's reverse diffusion...")
+        print("Adversarial samples are in processed space (with PCA). TabDiff will purify them directly.")
         print("This makes the adversarial samples more realistic while potentially still fooling the model.")
         
-        # Extract adversarial samples from results (they're in processed feature space)
-        # We need to map them back to raw input space first, then convert to TabDiff space
+        # Extract adversarial samples from results (they're already in processed feature space with PCA)
         feature_names = X_fraud_samples.columns.tolist()
-        adversarial_samples_raw = []
+        adversarial_samples_processed = []
         adversarial_indices = []
         
-        print(f"Converting {len(adversarial_results)} adversarial samples from processed space to raw space...")
-        failed_inverse_count = 0
+        print(f"Preparing {len(adversarial_results)} adversarial samples for purification (already in processed/PCA space)...")
         for result_row in adversarial_results:
             orig_idx = result_row['Original_Index']
-            try:
-                # Extract adversarial sample vector (in processed feature space)
-                sample_vec = [result_row[col] for col in feature_names]
-                sample_np = np.array(sample_vec)
-                
-                # Map back to raw input space using inverse transform
-                raw_sample = inverse_transform_sample(sample_np, feature_names, PPD, RD)
-                
-                # Get the original label
-                if orig_idx in val_raw_labels.index:
-                    raw_sample['isFraud'] = val_raw_labels.loc[orig_idx]
-                    adversarial_samples_raw.append(raw_sample)
-                    adversarial_indices.append(orig_idx)
-            except Exception as e:
-                failed_inverse_count += 1
-                if failed_inverse_count <= 5:  # Only print first 5 errors to avoid spam
-                    print(f"  Warning: Could not inverse transform adversarial sample {orig_idx}: {e}")
-                continue
+            # Extract adversarial sample vector (in processed feature space with PC columns)
+            sample_vec = [result_row[col] for col in feature_names]
+            sample_np = np.array(sample_vec)
+            
+            # Get the original label
+            if orig_idx in y_val_split.index:
+                sample_dict = {col: sample_np[i] for i, col in enumerate(feature_names)}
+                sample_dict['isFraud'] = y_val_split.loc[orig_idx]
+                adversarial_samples_processed.append(sample_dict)
+                adversarial_indices.append(orig_idx)
         
-        if failed_inverse_count > 0:
-            print(f"  Note: {failed_inverse_count} out of {len(adversarial_results)} samples failed inverse transform (likely PCA reconstruction issues)")
-        
-        if not adversarial_samples_raw:
-            print("Warning: No adversarial samples could be converted to raw space for purification.")
+        if not adversarial_samples_processed:
+            print("Warning: No adversarial samples found for purification.")
         else:
-            print(f"Processing {len(adversarial_samples_raw)} adversarial samples for purification...")
+            print(f"Processing {len(adversarial_samples_processed)} adversarial samples for purification...")
             
             # Save samples to temporary directory in TabDiff format
             temp_dir = Path('temp_purify_adversarial')
             temp_dir.mkdir(exist_ok=True)
             
-            # Create dataset matching TabDiff's expected format
-            adversarial_raw_df = pd.DataFrame(adversarial_samples_raw)
+            # Create DataFrame from processed adversarial samples
+            adversarial_processed_df = pd.DataFrame(adversarial_samples_processed)
             
             # Save as CSV
             temp_csv = temp_dir / 'fraud_data.csv'
-            adversarial_raw_df.to_csv(temp_csv, index=False)
+            adversarial_processed_df.to_csv(temp_csv, index=False)
             
             # Create info.json matching TabDiff's format
-            num_col_idx = [i for i, col in enumerate(adversarial_raw_df.columns) 
-                          if pd.api.types.is_numeric_dtype(adversarial_raw_df[col]) and col != 'isFraud']
-            cat_col_idx = [i for i, col in enumerate(adversarial_raw_df.columns) 
-                          if not pd.api.types.is_numeric_dtype(adversarial_raw_df[col]) and col != 'isFraud']
-            target_col_idx = [adversarial_raw_df.columns.get_loc('isFraud')]
+            num_col_idx = [i for i, col in enumerate(adversarial_processed_df.columns) 
+                          if pd.api.types.is_numeric_dtype(adversarial_processed_df[col]) and col != 'isFraud']
+            cat_col_idx = [i for i, col in enumerate(adversarial_processed_df.columns) 
+                          if not pd.api.types.is_numeric_dtype(adversarial_processed_df[col]) and col != 'isFraud']
+            target_col_idx = [adversarial_processed_df.columns.get_loc('isFraud')]
             
             temp_info = {
                 "name": "temp_purify_adversarial",
                 "task_type": "binclass",
                 "header": "infer",
-                "column_names": adversarial_raw_df.columns.tolist(),
+                "column_names": adversarial_processed_df.columns.tolist(),
                 "num_col_idx": num_col_idx,
                 "cat_col_idx": cat_col_idx,
                 "target_col_idx": target_col_idx,
@@ -1012,8 +1067,8 @@ def main():
                 T = src.Transformations(**T_dict)
                 
                 # Get categorical features (columns that are not numeric and not target)
-                cat_features = [col for col in adversarial_raw_df.columns 
-                               if col != 'isFraud' and not pd.api.types.is_numeric_dtype(adversarial_raw_df[col])]
+                cat_features = [col for col in adversarial_processed_df.columns 
+                               if col != 'isFraud' and not pd.api.types.is_numeric_dtype(adversarial_processed_df[col])]
                 target = 'isFraud'
                 
                 # Manually create Dataset (workaround for bug in dataset_from_csv)
@@ -1037,11 +1092,11 @@ def main():
                     y, 
                     {},  # int_col_idx_wrt_num
                     None,  # y_info
-                    TaskType.BINCLASS,  # task_type (was missing!)
-                    n_classes  # n_classes (was missing!)
+                    TaskType.BINCLASS,  # task_type
+                    n_classes  # n_classes
                 )
                 
-                # Transform dataset
+                # Transform dataset (TabDiff's quantile normalization)
                 dataset = src.transform_dataset(dataset, T, None)
                 
                 # Extract processed data
@@ -1051,15 +1106,16 @@ def main():
                 d_numerical = X_num_processed.shape[1]
                 
                 # TabDiff concatenates target to categorical features for classification
-                # We need to match this format
                 if X_cat_processed is not None:
-                    # Concatenate target to categorical (as TabDiff does)
                     X_cat_with_target = np.concatenate([y_processed.reshape(-1, 1), X_cat_processed], axis=1)
                     categories = src.get_categories({'train': X_cat_with_target})
                 else:
-                    # If no categorical, target goes to categorical
                     X_cat_with_target = y_processed.reshape(-1, 1)
                     categories = np.array([len(np.unique(y_processed))])
+                
+                # Store inverse transforms for converting back to processed space
+                num_inverse = dataset.num_transform.inverse_transform if dataset.num_transform is not None else lambda x: x
+                cat_inverse = dataset.cat_transform.inverse_transform if dataset.cat_transform is not None else lambda x: x
                 
                 # Purify each adversarial sample
                 purified_count = 0
@@ -1067,9 +1123,9 @@ def main():
                 
                 try:
                     from tqdm import tqdm
-                    iterator = tqdm(range(len(adversarial_samples_raw)), desc="Purifying adversarial samples")
+                    iterator = tqdm(range(len(adversarial_samples_processed)), desc="Purifying adversarial samples")
                 except ImportError:
-                    iterator = range(len(adversarial_samples_raw))
+                    iterator = range(len(adversarial_samples_processed))
                 
                 for i in iterator:
                     orig_idx = adversarial_indices[i]
@@ -1084,33 +1140,98 @@ def main():
                         else:
                             sample_tabdiff = sample_num
                         
-                        # Purify
+                        # Purify using TabDiff reverse diffusion
                         purified_tabdiff = purify_with_tabdiff(
                             sample_tabdiff, diffusion, d_numerical, 
                             device=device, t_purify=0.1, num_steps=5
                         )
                         
                         if purified_tabdiff is not None:
+                            # Convert purified sample back to processed space format
+                            # Split num and cat (cat includes target as first element)
+                            purified_num = purified_tabdiff[:d_numerical]
+                            purified_cat_with_target = purified_tabdiff[d_numerical:]
+                            
+                            # Inverse transform numerical features to get back to processed space
+                            try:
+                                purified_num_processed = num_inverse(purified_num.reshape(1, -1))[0]
+                            except Exception:
+                                # If inverse transform fails, use purified values directly
+                                purified_num_processed = purified_num
+                            
+                            # Extract target and categorical
+                            if len(purified_cat_with_target) > 0:
+                                purified_target = purified_cat_with_target[0]
+                                if len(purified_cat_with_target) > 1:
+                                    purified_cat = purified_cat_with_target[1:]
+                                    try:
+                                        if cat_inverse is not None and len(purified_cat) > 0:
+                                            # Categorical inverse transform
+                                            purified_cat_processed = cat_inverse(purified_cat.reshape(1, -1))[0]
+                                        else:
+                                            purified_cat_processed = purified_cat
+                                    except Exception:
+                                        purified_cat_processed = purified_cat
+                                else:
+                                    purified_cat_processed = np.array([])
+                            else:
+                                purified_target = 1.0  # Default to fraud
+                                purified_cat_processed = np.array([])
+                            
+                            # Reconstruct sample in processed space (with PC columns)
+                            # Map back to feature names - use the order from adversarial_processed_df
+                            purified_sample_processed = {}
+                            
+                            # Get the order of features as they appear in the DataFrame
+                            num_feature_names = [col for col in adversarial_processed_df.columns 
+                                               if col != 'isFraud' and col not in cat_features]
+                            
+                            # Map numerical features back
+                            for j, col in enumerate(num_feature_names):
+                                if j < len(purified_num_processed) and pd.notna(purified_num_processed[j]):
+                                    purified_sample_processed[col] = float(purified_num_processed[j])
+                                else:
+                                    # Fallback to original adversarial value
+                                    purified_sample_processed[col] = result_row.get(col, 0.0)
+                            
+                            # Map categorical features back
+                            if len(purified_cat_processed) > 0:
+                                for j, col in enumerate(cat_features):
+                                    if j < len(purified_cat_processed) and pd.notna(purified_cat_processed[j]):
+                                        purified_sample_processed[col] = purified_cat_processed[j]
+                                    else:
+                                        # Fallback to original adversarial value
+                                        purified_sample_processed[col] = result_row.get(col, 0)
+                            
+                            # Add target
+                            purified_sample_processed['isFraud'] = int(round(purified_target))
+                            
                             purified_count += 1
                             purified_row = result_row.copy()
                             purified_row['Purified'] = True
                             purified_row['Purification_Success'] = True
-                            # Store purified sample vector (in TabDiff space)
-                            purified_row['Purified_TabDiff_Space'] = purified_tabdiff.tolist()
+                            
+                            # Store purified sample in processed space (with PC columns)
+                            for col in feature_names:
+                                if col in purified_sample_processed:
+                                    purified_row[f'Purified_{col}'] = purified_sample_processed[col]
+                            
+                            purified_row['Purified_isFraud'] = purified_sample_processed.get('isFraud', 1)
                             purified_results.append(purified_row)
                         else:
                             failed_purification += 1
                             
                     except Exception as e:
                         print(f"  Error purifying adversarial sample {orig_idx}: {e}")
+                        import traceback
+                        traceback.print_exc()
                         failed_purification += 1
                 
                 print(f"\nPurification Complete:")
                 print(f"  Successfully Purified: {purified_count} adversarial samples")
                 print(f"  Failed: {failed_purification}")
-                print(f"\nNote: Purified samples are stored in TabDiff space.")
-                print(f"      These are purified versions of the adversarial samples (with noise removed).")
-                print(f"      To evaluate with XGBoost, inverse transform from TabDiff space is required.")
+                print(f"\nNote: Purified samples are stored in processed space (with PC columns).")
+                print(f"      They can be directly evaluated with XGBoost model.")
                 
             except Exception as e:
                 print(f"Error in TabDiff preprocessing: {e}")
@@ -1168,7 +1289,31 @@ def main():
             purified_df = pd.DataFrame(purified_results)
             purified_output_path = 'adversarial_samples_purified.csv'
             purified_df.to_csv(purified_output_path, index=False)
-            print(f"Saved purified samples to {purified_output_path}")
+            print(f"Saved purified samples (with metadata) to {purified_output_path}")
+            
+            # Also create a clean CSV with purified samples in processed space (ready for XGBoost)
+            purified_samples_clean = []
+            for row in purified_results:
+                clean_sample = {}
+                # Extract purified feature values
+                for col in feature_names:
+                    purified_col = f'Purified_{col}'
+                    if purified_col in row:
+                        clean_sample[col] = row[purified_col]
+                    else:
+                        # Fallback to original adversarial value if purification failed for this feature
+                        clean_sample[col] = row.get(col, 0.0)
+                # Add label
+                clean_sample['isFraud'] = row.get('Purified_isFraud', row.get('isFraud', 1))
+                purified_samples_clean.append(clean_sample)
+            
+            if purified_samples_clean:
+                purified_clean_df = pd.DataFrame(purified_samples_clean)
+                purified_clean_output_path = 'adversarial_samples_purified_clean.csv'
+                purified_clean_df.to_csv(purified_clean_output_path, index=False)
+                print(f"Saved purified samples (clean format, ready for XGBoost) to {purified_clean_output_path}")
+                print(f"  Shape: {purified_clean_df.shape}")
+                print(f"  Columns: {list(purified_clean_df.columns[:5])}... (includes PC columns)")
     else:
         print("\nNo adversarial samples generated.")
 
