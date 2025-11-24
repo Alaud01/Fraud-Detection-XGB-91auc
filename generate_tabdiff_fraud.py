@@ -408,8 +408,8 @@ def prepare_tabdiff_data(fraud_df, output_dir, dataname='fraud_data'):
     
     return info_path, data_dir
 
-def update_tabdiff_config(config_path, steps=1, epochs=None):
-    """Update TabDiff config for quick training."""
+def update_tabdiff_config(config_path, steps=1, checkpoint_freq=250, epochs=None):
+    """Update TabDiff config for training with specified steps and checkpoint frequency."""
     try:
         import tomli_w
         import tomli
@@ -421,7 +421,7 @@ def update_tabdiff_config(config_path, steps=1, epochs=None):
                 config = toml.load(f)
             
             config['train']['main']['steps'] = steps
-            config['train']['main']['check_val_every'] = 1
+            config['train']['main']['check_val_every'] = checkpoint_freq
             config['train']['main']['batch_size'] = 512
             config['diffusion_params']['num_timesteps'] = 5
             
@@ -432,7 +432,7 @@ def update_tabdiff_config(config_path, steps=1, epochs=None):
             with open(config_path, 'w') as f:
                 toml.dump(config, f)
             
-            print(f"Updated config: steps={steps}, batch_size=512, sample_batch_size=256, num_timesteps=5")
+            print(f"Updated config: steps={steps}, check_val_every={checkpoint_freq}, batch_size=512, sample_batch_size=256, num_timesteps=5")
             return True
         except ImportError:
             print("ERROR: Neither tomli nor toml found. Please install tomli: pip install tomli tomli-w")
@@ -443,7 +443,7 @@ def update_tabdiff_config(config_path, steps=1, epochs=None):
         config = tomli.load(f)
     
     config['train']['main']['steps'] = steps
-    config['train']['main']['check_val_every'] = 1
+    config['train']['main']['check_val_every'] = checkpoint_freq
     config['train']['main']['batch_size'] = 512
     
     config['diffusion_params']['num_timesteps'] = 5
@@ -455,7 +455,7 @@ def update_tabdiff_config(config_path, steps=1, epochs=None):
     with open(config_path, 'wb') as f:
         tomli_w.dump(config, f)
     
-    print(f"Updated config: steps={steps}, batch_size=512, sample_batch_size=256, num_timesteps=5")
+    print(f"Updated config: steps={steps}, check_val_every={checkpoint_freq}, batch_size=512, sample_batch_size=256, num_timesteps=5")
     return True
 
 def main():
@@ -568,10 +568,10 @@ def main():
     finally:
         os.chdir(original_cwd)
     
-    # Step 14: Update TabDiff config for quick training
-    print("\nStep 14: Updating TabDiff config for quick training...")
+    # Step 14: Update TabDiff config for training with 500 steps and checkpoints every 250 steps
+    print("\nStep 14: Updating TabDiff config for training (500 steps, checkpoints every 250 steps)...")
     config_path = tabdiff_dir / 'tabdiff' / 'configs' / 'tabdiff_configs.toml'
-    if not update_tabdiff_config(config_path, steps=1):
+    if not update_tabdiff_config(config_path, steps=500, checkpoint_freq=250):
         print("Warning: Could not update config file, continuing with default settings...")
     
     # Step 15: Train TabDiff

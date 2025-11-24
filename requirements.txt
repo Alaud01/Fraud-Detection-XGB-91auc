@@ -2,6 +2,11 @@ lightgbm
 matplotlib
 numpy
 pandas
+prdc
+icecream
+kaleido
+category_encoders
+wandb
 scikit-learn
 scipy
 seaborn
