@@ -37,6 +37,7 @@ from sklearn.metrics import (
     balanced_accuracy_score, matthews_corrcoef, cohen_kappa_score
 )
 import joblib
+import time
 
 warnings.filterwarnings('ignore')
 
@@ -565,6 +566,146 @@ class applyModel:
         return submission
 
 
+def generate_performance_plots(results_df):
+    """Generate plots to compare model performance."""
+    # 1. ROC-AUC Comparison
+    plt.figure(figsize=(10, 6))
+    sns.barplot(x='model_name', y='roc_auc', data=results_df, palette='viridis')
+    plt.title('Model Comparison: ROC-AUC Score', fontsize=16)
+    plt.ylabel('ROC-AUC', fontsize=12)
+    plt.xlabel('Model', fontsize=12)
+    plt.ylim(0.5, 1.0)
+    plt.xticks(rotation=15)
+    plt.tight_layout()
+    plt.savefig('comparison_roc_auc.png')
+    plt.show()
+
+    # 2. Accuracy/Precision/Recall Comparison
+    metrics_df = results_df.melt(id_vars=['model_name'], 
+                                 value_vars=['accuracy', 'precision', 'recall'], 
+                                 var_name='metric', value_name='score')
+    
+    plt.figure(figsize=(12, 6))
+    sns.barplot(x='model_name', y='score', hue='metric', data=metrics_df, palette='rocket')
+    plt.title('Model Comparison: Accuracy, Precision, Recall', fontsize=16)
+    plt.ylabel('Score', fontsize=12)
+    plt.xlabel('Model', fontsize=12)
+    plt.ylim(0, 1.0)
+    plt.xticks(rotation=15)
+    plt.legend(title='Metric')
+    plt.tight_layout()
+    plt.savefig('comparison_metrics.png')
+    plt.show()
+
+    # 3. Time Comparison
+    plt.figure(figsize=(10, 6))
+    sns.barplot(x='model_name', y='training_time', data=results_df, palette='mako')
+    plt.title('Model Comparison: Training Time', fontsize=16)
+    plt.ylabel('Time (seconds)', fontsize=12)
+    plt.xlabel('Model', fontsize=12)
+    plt.xticks(rotation=15)
+    plt.tight_layout()
+    plt.savefig('comparison_time.png')
+    plt.show()
+
+def plot_fraud_distribution(original_fraud, purified_samples, features=None):
+    """Plot distribution of purified samples against original fraud for multiple features."""
+    
+    # Auto-select features if not provided
+    if features is None:
+        # Priority list of features to check
+        priority_features = ['PC1', 'PC2', 'TransactionAmt', 'card1', 'card2', 'C1', 'C2', 'D1']
+        features = []
+        
+        # Find common numeric columns
+        common_cols = [c for c in original_fraud.columns 
+                      if c in purified_samples.columns 
+                      and c != 'isFraud' 
+                      and c != 'sample_weight'
+                      and pd.api.types.is_numeric_dtype(original_fraud[c])]
+        
+        # Select features from priority list
+        for feat in priority_features:
+            if feat in common_cols:
+                features.append(feat)
+                if len(features) >= 4:  # Get 4 features
+                    break
+        
+        # If we don't have enough, add more from common_cols
+        if len(features) < 4:
+            for col in common_cols:
+                if col not in features:
+                    features.append(col)
+                    if len(features) >= 4:
+                        break
+    
+    if not features:
+        print("No common features found for distribution plot.")
+        return
+    
+    # Create subplots (2x2 grid for 4 features)
+    n_features = min(len(features), 4)
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+    axes = axes.flatten()
+    
+    for idx, feature in enumerate(features[:n_features]):
+        ax = axes[idx]
+        
+        # Check if feature exists
+        if feature not in original_fraud.columns or feature not in purified_samples.columns:
+            ax.text(0.5, 0.5, f'{feature}\nnot available', 
+                   ha='center', va='center', fontsize=12)
+            ax.set_title(f'{feature}', fontsize=12)
+            continue
+        
+        # Plot Original Fraud
+        sns.kdeplot(data=original_fraud[feature], label='Original Fraud', 
+                   fill=True, color='#e74c3c', alpha=0.4, ax=ax, linewidth=2)
+        
+        # Plot Purified Samples
+        sns.kdeplot(data=purified_samples[feature], label='Purified Samples', 
+                   fill=True, color='#3498db', alpha=0.4, ax=ax, linewidth=2)
+        
+        ax.set_title(f'Distribution: {feature}', fontsize=14, fontweight='bold')
+        ax.set_xlabel(feature, fontsize=11)
+        ax.set_ylabel('Density', fontsize=11)
+        ax.legend(loc='best', fontsize=10)
+        ax.grid(True, alpha=0.3)
+    
+    plt.suptitle('Distribution Comparison: Original Fraud vs Purified Adversarial Samples', 
+                fontsize=16, fontweight='bold', y=0.995)
+    plt.tight_layout()
+    plt.savefig('distribution_comparison_multi.png', dpi=150, bbox_inches='tight')
+    plt.show()
+    
+
+    print(f"  Plotted distributions for features: {', '.join(features[:n_features])}")
+
+
+def plot_test_predictions_histogram(predictions_dict):
+    """Plot histogram of fraud probability predictions for each model."""
+    plt.figure(figsize=(12, 8))
+    
+    # Plot each model's predictions
+    for model_name, probs in predictions_dict.items():
+        sns.histplot(probs, label=model_name, bins=100, kde=True, element="step", 
+                     stat="density", common_norm=False, alpha=0.3)
+        
+    plt.title('Distribution of Fraud Probability Predictions on Test Set', fontsize=16)
+    plt.xlabel('Predicted Probability', fontsize=12)
+    plt.ylabel('Density', fontsize=12)
+    plt.legend(fontsize=10)
+    plt.grid(True, alpha=0.3)
+    plt.xlim(0, 1)
+    plt.yscale('log') # Log scale to see low probability details better
+    
+    plt.tight_layout()
+    plt.savefig('comparison_test_predictions_hist.png')
+    plt.show()
+    print("  Saved test prediction histogram to comparison_test_predictions_hist.png")
+
+
+
 # ============================================================================
 # Main retraining script
 # ============================================================================
@@ -578,9 +719,9 @@ def get_latest_model(model_dir='xgb_saved'):
     return str(latest_file)
 
 def main():
-    """Main function to retrain model with ADVERSARIAL + ORIGINAL data."""
+    """Main function to retrain 3 models: original, original+synthetic, original+synthetic+adversarial."""
     print("=" * 80)
-    print("RETRAINING MODEL WITH ADVERSARIAL EXAMPLES AND ORIGINAL DATA")
+    print("RETRAINING 3 MODELS: ORIGINAL, ORIGINAL+SYNTHETIC, ORIGINAL+SYNTHETIC+ADVERSARIAL")
     print("=" * 80)
 
     # Step 1: Load Adversarial Data
@@ -726,11 +867,12 @@ def main():
         
     print(f"  Original data shape after PCA: {train_df_orig_pca.shape}")
     
-    # Step 4: Concat Original (Processed) and Adversarial
-    print("\nStep 4: Combining Original and Adversarial data...")
+    # Step 4: Load Synthetic and Adversarial Data
+    print("\nStep 4: Loading synthetic and adversarial data...")
     
     # Load synthetic TabDiff data
     tabdiff_syn_path = 'TabDiff/tabdiff/result/fraud_data/quick_fraud/1/samples.csv'
+    tabdiff_df = pd.DataFrame()
     if Path(tabdiff_syn_path).exists():
         print(f"  Loading synthetic TabDiff data from {tabdiff_syn_path}...")
         tabdiff_df = pd.read_csv(tabdiff_syn_path)
@@ -749,218 +891,143 @@ def main():
         
         # Create dummy TransactionIDs if needed (avoid conflict)
         if 'TransactionID' not in tabdiff_df.columns:
-            # Just use a range well outside normal range
-            max_id = 20000000 # Arbitrary high number
+            max_id = 20000000  # Arbitrary high number
             tabdiff_df['TransactionID'] = range(max_id, max_id + len(tabdiff_df))
-            
     else:
         print(f"  Warning: TabDiff synthetic data not found at {tabdiff_syn_path}. Skipping.")
-        tabdiff_df = pd.DataFrame()
 
-    # Align columns
-    # Start with train columns as base
+    # Align columns across all datasets
     base_cols = list(train_df_orig_pca.columns)
-    # common_cols must be in adv_df too
     common_cols = [c for c in base_cols if c in adv_df.columns]
     
     if not tabdiff_df.empty:
-        # Also must be in tabdiff_df
         common_cols = [c for c in common_cols if c in tabdiff_df.columns]
         
-    if 'isFraud' not in common_cols: common_cols.append('isFraud')
+    if 'isFraud' not in common_cols:
+        common_cols.append('isFraud')
     
     print(f"  Common columns: {len(common_cols)}")
     
+    # Prepare aligned datasets
     train_df_final = train_df_orig_pca[common_cols].copy()
     adv_df_final = adv_df[common_cols].copy()
     
-    # To reduce memory, convert float64 to float32
+    # Convert to float32 to reduce memory
     for col in train_df_final.select_dtypes(include=['float64']).columns:
         train_df_final[col] = train_df_final[col].astype(np.float32)
     for col in adv_df_final.select_dtypes(include=['float64']).columns:
         adv_df_final[col] = adv_df_final[col].astype(np.float32)
     
-    # Add weight column
-    # Original samples get weight 1
+    # Add sample weights
     train_df_final['sample_weight'] = 1.0
-    
-    # Adversarial samples get higher weight
-    # "combat the difference appropriately" -> Weight them higher so model pays attention to these hard examples
-    # Heuristic: Start with weight 10? Or 5?
-    # Let's use weight 1.0 (Equal weight) as requested
     adv_weight = 3.0
     adv_df_final['sample_weight'] = adv_weight
     print(f"  Assigning weight {adv_weight} to adversarial samples")
     
-    dfs_to_concat = [train_df_final, adv_df_final]
+    # Prepare synthetic data if available
+    tabdiff_final = pd.DataFrame()
     if not tabdiff_df.empty:
-        # Select common columns but also ensure sample_weight is included if present in tabdiff_df
         cols_to_use = [c for c in common_cols if c in tabdiff_df.columns]
         tabdiff_final = tabdiff_df[cols_to_use].copy()
-        
-        # Explicitly ensure sample_weight is present (it might have been filtered out if not in common_cols)
-        if 'sample_weight' not in tabdiff_final.columns and 'sample_weight' in tabdiff_df.columns:
-            tabdiff_final['sample_weight'] = tabdiff_df['sample_weight']
-        elif 'sample_weight' not in tabdiff_final.columns:
-             tabdiff_final['sample_weight'] = 1.0
-             
-        dfs_to_concat.append(tabdiff_final)
-        print(f"  Included {len(tabdiff_final)} synthetic TabDiff samples.")
+        if 'sample_weight' not in tabdiff_final.columns:
+            tabdiff_final['sample_weight'] = 1.0
+        print(f"  Prepared {len(tabdiff_final)} synthetic TabDiff samples.")
     
-    train_df_combined = pd.concat(dfs_to_concat, ignore_index=True)
-    print(f"  Combined data shape: {train_df_combined.shape}")
-    
-    # Diagnostic: Check weights
-    if 'sample_weight' in train_df_combined.columns:
-        nan_weights = train_df_combined['sample_weight'].isna().sum()
-        if nan_weights > 0:
-            print(f"  WARNING: Found {nan_weights} NaN weights in combined dataframe. Filling with 1.0.")
-            train_df_combined['sample_weight'] = train_df_combined['sample_weight'].fillna(1.0)
-    else:
-        print("  WARNING: sample_weight column missing in combined dataframe! Creating with default 1.0.")
-        train_df_combined['sample_weight'] = 1.0
-
-    # Step 7: Split data and retrain model
-    print("\nStep 7: Splitting data and retraining model...")
-    # Force garbage collection before split
+    # Step 5: Create 3 Training Datasets
+    print("\nStep 5: Creating 3 training datasets...")
     import gc
-    gc.collect()
     
-    X = train_df_combined.drop(columns=['isFraud', 'sample_weight'])
-    y = train_df_combined['isFraud']
-    weights = train_df_combined['sample_weight']
+    # Dataset 1: Original only
+    train_df_1 = train_df_final.copy()
+    print(f"  Dataset 1 (Original only): {train_df_1.shape[0]} samples")
     
-    # Free memory of the combined dataframe if possible (but we need it for X,y)
-    # Can't delete yet.
+    # Dataset 2: Original + Synthetic
+    if not tabdiff_final.empty:
+        train_df_2 = pd.concat([train_df_final, tabdiff_final], ignore_index=True)
+        print(f"  Dataset 2 (Original + Synthetic): {train_df_2.shape[0]} samples")
+    else:
+        train_df_2 = train_df_1.copy()
+        print(f"  Dataset 2 (Original + Synthetic): {train_df_2.shape[0]} samples (no synthetic data available)")
     
-    # Split into train and validation (stratified)
-    # We need to keep weights aligned
-    X_train, X_val, y_train, y_val, w_train, w_val = train_test_split(
-        X, y, weights, test_size=0.2, stratify=y, random_state=42
-    )
+    # Dataset 3: Original + Synthetic + Adversarial
+    train_df_3 = pd.concat([train_df_final, adv_df_final], ignore_index=True)
+    if not tabdiff_final.empty:
+        train_df_3 = pd.concat([train_df_3, tabdiff_final], ignore_index=True)
+    print(f"  Dataset 3 (Original + Synthetic + Adversarial): {train_df_3.shape[0]} samples")
     
-    # Delete original combined to free memory
-    del train_df_combined, X, y, weights
-    gc.collect()
-
-    print(f"Training set size: {X_train.shape[0]}")
-    print(f"Validation set size: {X_val.shape[0]}")
-
-    # Train model
-    print("\nStep 8: Training XGBoost model...")
+    # Ensure sample_weight is present in all
+    for df in [train_df_1, train_df_2, train_df_3]:
+        if 'sample_weight' not in df.columns:
+            df['sample_weight'] = 1.0
+        df['sample_weight'] = df['sample_weight'].fillna(1.0)
     
-    # Reduce number of estimators/depth to reduce memory usage during training
-    # The segfault might be happening during xgb training or prediction
+    # Step 6: Train 3 Models
+    print("\nStep 6: Training 3 XGBoost models...")
+    AM = applyModel(eval=False)  # Disable eval plots to avoid crashes
     
-    AM = applyModel(eval=False) # Disable eval plots to avoid segfault
+    models = []
+    model_names = [
+        "Original",
+        "Original + Synthetic",
+        "Original + Synthetic + Adversarial"
+    ]
     
-    # Define custom lightweight XGB parameters
-    # This overrides the default inside trainModel if we modify it, but here we just call it.
-    # Let's modify trainModel to accept kwargs or just modify it here.
-    # The class AM doesn't support kwargs update easily without modifying class.
-    # We'll modify the AM.trainModel method call logic inside the class if needed, 
-    # but for now let's assume the model training itself is causing issue.
+    for i, (train_df, name) in enumerate(zip([train_df_1, train_df_2, train_df_3], model_names), 1):
+        print(f"\n  Training Model {i}: {name}...")
+        gc.collect()
+        
+        X = train_df.drop(columns=['isFraud', 'sample_weight'])
+        y = train_df['isFraud']
+        weights = train_df['sample_weight']
+        
+        # Split into train and validation
+        X_train, X_val, y_train, y_val, w_train, w_val = train_test_split(
+            X, y, weights, test_size=0.2, stratify=y, random_state=42
+        )
+        
+        print(f"    Training samples: {X_train.shape[0]}, Validation samples: {X_val.shape[0]}")
+        print(f"    Fraud cases in training: {(y_train == 1).sum()}")
+        
+        # Train model
+        start_time = time.time()
+        model = AM.trainModel(
+            X_train, X_val,
+            y_train, y_val,
+            y_train,
+            sample_weight=w_train
+        )
+        end_time = time.time()
+        training_time = end_time - start_time
+        print(f"    Training time: {training_time:.2f} seconds")
+        
+        models.append({
+            'model': model,
+            'name': name,
+            'X_train': X_train,
+            'X_val': X_val,
+            'y_train': y_train,
+            'y_train': y_train,
+            'y_val': y_val,
+            'training_time': training_time
+        })
+        
+        # Clean up
+        del X, y, weights, X_train, X_val, y_train, y_val, w_train, w_val
+        gc.collect()
     
-    # Pass sample_weights to fit
-    # The crash might be inside xgboost fit.
-    xgbModel_new = AM.trainModel(
-        X_train, X_val,
-        y_train, y_val,
-        y_train, # Needs y_train for class weights calculation (though arg name is y_train, logic uses it)
-        sample_weight=w_train
-    )
-
-    # Save the trained model
-    print("\nStep 8b: Saving trained model...")
+    # Save models
+    print("\nStep 7: Saving trained models...")
     save_dir = Path("xgb_saved")
     save_dir.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    model_path = save_dir / f"xgb_adversarial_{timestamp}.json"
-    # xgbModel_new.save_model(str(model_path)) # Commented out as it might be causing crash in sandbox
-    print(f"  ✓ Model saved to {model_path} (SIMULATED)")
     
-    # Step 9: Compare performance with old model
-    print("\nStep 9: Comparing Performance with saved model...")
-    
-    # Load saved model
-    # You mentioned "performance of the xgb model is the saved folder"
-    # We'll try to find the latest one that ISN'T the one we just saved
-    saved_models = sorted(list(save_dir.glob('*.json')))
-    # Filter out the one we just saved
-    old_models = [m for m in saved_models if str(m) != str(model_path)]
-    
-    if old_models:
-        old_model_path = old_models[-1] # Latest
-        print(f"  Loading old model from: {old_model_path}")
-        
-        xgbModel_old = xgb.XGBClassifier()
-        xgbModel_old.load_model(str(old_model_path))
-        
-        # Evaluate both on the VALIDATION set (which contains a mix of original and adversarial)
-        print("\n  Evaluating NEW model on validation set:")
-        y_pred_new = xgbModel_new.predict(X_val)
-        y_proba_new = xgbModel_new.predict_proba(X_val)[:, 1]
-        metrics_new = AM.evaluateModel(y_val, y_pred_new, y_proba_new)
-        
-        print("\n  Evaluating OLD model on validation set:")
-        # We need to ensure columns match for old model.
-        # Old model expects specific columns.
-        # Ideally, feature names should match if pipeline is same.
-        try:
-            # The old model expects data in a specific order and set of columns.
-            # If PCA was used differently or columns were dropped differently, this will fail.
-            # We can try to align X_val to the old model's expectations if we can know them.
-            # However, XGBoost's error message usually lists expected vs actual.
-            # "feature_names mismatch"
-            
-            # Best effort: if the model has feature_names_in_, align X_val to it.
-            # Note: load_model might not restore feature_names_in_ attribute directly on the sklearn wrapper 
-            # in all versions, but let's try.
-            
-            # For the sklearn API, we can access the booster to get feature names
-            booster = xgbModel_old.get_booster()
-            expected_features = booster.feature_names
-            
-            if expected_features:
-                # Align X_val columns to match expected_features
-                # 1. Add missing columns (filled with 0 or nan)
-                missing_cols = [col for col in expected_features if col not in X_val.columns]
-                if missing_cols:
-                    # print(f"  Warning: Old model expects {len(missing_cols)} columns not in current validation set. Filling with 0.")
-                    for col in missing_cols:
-                        X_val[col] = 0
-                
-                # 2. Drop extra columns
-                # extra_cols = [col for col in X_val.columns if col not in expected_features]
-                # if extra_cols:
-                #    X_val_old = X_val.drop(columns=extra_cols)
-                # else:
-                #    X_val_old = X_val
-                
-                # 3. Reorder columns
-                X_val_old = X_val[expected_features]
-            else:
-                X_val_old = X_val
+    for i, model_info in enumerate(models, 1):
+        model_path = save_dir / f"xgb_model{i}_{timestamp}.json"
+        # model_info['model'].save_model(str(model_path))  # Commented out to avoid crashes
+        print(f"  Model {i} ({model_info['name']}): {model_path} (SIMULATED)")
 
-            y_pred_old = xgbModel_old.predict(X_val_old)
-            y_proba_old = xgbModel_old.predict_proba(X_val_old)[:, 1]
-            metrics_old = AM.evaluateModel(y_val, y_pred_old, y_proba_old)
-            
-            # Compare
-            print("\n  Comparison (Validation Set):")
-            print(f"  New Model ROC-AUC: {metrics_new[4]:.4f}")
-            print(f"  Old Model ROC-AUC: {metrics_old[4]:.4f}")
-            print(f"  Improvement: {metrics_new[4] - metrics_old[4]:.4f}")
-            
-        except Exception as e:
-            print(f"  Could not evaluate old model: {e}")
-            print("  (Possibly feature mismatch due to different PCA components or dropped columns)")
-            
-    else:
-        print("  No old model found to compare against.")
-
-    # Step 10: Process test data and generate predictions
-    print("\nStep 10: Processing test data and generating predictions...")
+    # Step 8: Process test data
+    print("\nStep 8: Processing test data...")
     
     # Load test data
     print("  Loading test data...")
@@ -1012,8 +1079,6 @@ def main():
             test_df[col] = scaler.fit_transform(test_df[[col]])
     
     # Apply PCA if it was applied to training data
-    # Note: Currently PCA is disabled, but if enabled, we'd need to use the same PCA model
-    # For now, we'll skip PCA to match the training pipeline
     print("  Skipping PCA (matching training pipeline)...")
     test_df_pca = test_df.copy()
     
@@ -1027,17 +1092,11 @@ def main():
     test_cols_to_drop = [col for col in cols_to_drop if col in test_df_pca.columns]
     test_df_pca.drop(columns=test_cols_to_drop, inplace=True)
     
-    # Align test columns with training columns
-    print("  Aligning test columns with training columns...")
-    # Get the columns that the model expects (from X_train)
-    expected_cols = list(X_train.columns)
+    # Get expected columns from first model (all should have same columns)
+    expected_cols = list(models[0]['X_train'].columns)
     
-    # Add TransactionID if not in expected_cols but needed for submission
-    if 'TransactionID' not in expected_cols and 'TransactionID' in test_df_pca.columns:
-        # We'll keep TransactionID separate for submission
-        test_transaction_ids = test_df_pca['TransactionID'].copy()
-    else:
-        test_transaction_ids = test_df_pca['TransactionID'].copy() if 'TransactionID' in test_df_pca.columns else test_transaction_df['TransactionID']
+    # Store TransactionID for submission
+    test_transaction_ids = test_transaction_df['TransactionID'].copy()
     
     # Remove TransactionID from test_df_pca for prediction
     if 'TransactionID' in test_df_pca.columns:
@@ -1059,21 +1118,194 @@ def main():
     
     print(f"  Test data shape after preprocessing: {test_df_pca.shape}")
     
-    # Generate predictions using the trained model
-    print("  Generating predictions on test set...")
-    submission = AM.pred_and_submit(
-        xgbModel_new, 
-        test_df_pca, 
-        test_transaction_df, 
-        plot_pred=False  # Disable plots to avoid crashes
-    )
+    # Step 9: Evaluate all 3 models on validation set (for metrics with labels)
+    print("\nStep 9: Evaluating all 3 models on validation set...")
+    print("=" * 80)
     
-    print(f"  ✓ Predictions saved to new_submission.csv")
-    print(f"  Submission shape: {submission.shape}")
-    print(f"  Prediction range: [{submission['isFraud'].min():.4f}, {submission['isFraud'].max():.4f}]")
+    validation_results = []
+    
+    for i, model_info in enumerate(models, 1):
+        print(f"\nEvaluating Model {i} on Validation Set: {model_info['name']}")
+        print("-" * 80)
+        
+        model = model_info['model']
+        X_val = model_info['X_val']
+        y_val = model_info['y_val']
+        
+        # Generate predictions
+        y_pred = model.predict(X_val)
+        y_pred_proba = model.predict_proba(X_val)[:, 1]
+        
+        # Compute metrics (without plots)
+        accuracy = accuracy_score(y_val, y_pred)
+        precision = precision_score(y_val, y_pred)
+        recall = recall_score(y_val, y_pred)
+        f1 = f1_score(y_val, y_pred)
+        roc_auc = roc_auc_score(y_val, y_pred_proba)
+        balanced_acc = balanced_accuracy_score(y_val, y_pred)
+        mcc = matthews_corrcoef(y_val, y_pred)
+        kappa = cohen_kappa_score(y_val, y_pred)
+        
+        print(f"  Accuracy: {accuracy:.4f}")
+        print(f"  Precision: {precision:.4f}")
+        print(f"  Recall: {recall:.4f}")
+        print(f"  F1 Score: {f1:.4f}")
+        print(f"  ROC-AUC: {roc_auc:.4f}")
+        print(f"  Balanced Accuracy: {balanced_acc:.4f}")
+        print(f"  MCC: {mcc:.4f}")
+        print(f"  Cohen's Kappa: {kappa:.4f}")
+        
+        validation_results.append({
+            'model_name': model_info['name'],
+            'model_num': i,
+            'accuracy': accuracy,
+            'precision': precision,
+            'recall': recall,
+            'f1': f1,
+            'roc_auc': roc_auc,
+            'balanced_acc': balanced_acc,
+            'mcc': mcc,
+            'kappa': kappa,
+            'training_time': model_info['training_time']
+        })
+    
+    # Print validation set comparison
+    print("\n" + "=" * 80)
+    print("VALIDATION SET PERFORMANCE COMPARISON")
+    print("=" * 80)
+    print(f"\n{'Model':<40} {'ROC-AUC':<10} {'Accuracy':<10} {'Precision':<10} {'Recall':<10} {'F1':<10}")
+    print("-" * 80)
+    
+    for result in validation_results:
+        print(f"{result['model_name']:<40} "
+              f"{result['roc_auc']:<10.4f} "
+              f"{result['accuracy']:<10.4f} "
+              f"{result['precision']:<10.4f} "
+              f"{result['recall']:<10.4f} "
+              f"{result['f1']:<10.4f}")
+    
+    print("\n" + "=" * 80)
+    
+    # Generate comparison plots
+    print("\nGenerating comparison plots...")
+    results_df = pd.DataFrame(validation_results)
+    generate_performance_plots(results_df)
+    
+    # Generate distribution plot (Original Fraud vs Purified Samples)
+    # We need to get the original fraud data (standardized) and purified samples (adv_df_final)
+    # train_df_orig_pca has the original data (standardized + PCA if applied)
+    # But we want to compare meaningful features if possible.
+    # Since we are using PCA features in the final model, we might have to plot PC1.
+    
+    print("Generating distribution plot...")
+    # Filter original fraud
+    orig_fraud = train_df_final[train_df_final['isFraud'] == 1]
+    
+    # Auto-select 4 important features for comparison
+    print(f"  Comparing distributions between original fraud and purified adversarial samples...")
+    plot_fraud_distribution(orig_fraud, adv_df_final, features=None)
+    
+    # Step 10: Evaluate all 3 models on test set
+    print("\nStep 10: Evaluating all 3 models on test set...")
+    print("=" * 80)
+    
+    test_results = []
+    test_predictions = {}
+
+    
+    for i, model_info in enumerate(models, 1):
+        print(f"\nEvaluating Model {i}: {model_info['name']}")
+        print("-" * 80)
+        
+        model = model_info['model']
+        
+        # Align test data columns to match this model's expected features
+        test_X = test_df_pca.copy()
+        
+        # Get feature names from model
+        try:
+            booster = model.get_booster()
+            model_features = booster.feature_names
+            if model_features:
+                # Ensure all expected features are present
+                missing = [f for f in model_features if f not in test_X.columns]
+                if missing:
+                    for f in missing:
+                        test_X[f] = 0
+                # Reorder to match model
+                test_X = test_X[model_features]
+        except:
+            # If we can't get feature names, use expected_cols
+            pass
+        
+        # Generate predictions
+        y_pred_proba = model.predict_proba(test_X)[:, 1]
+        test_predictions[model_info['name']] = y_pred_proba
+
+        y_pred = (y_pred_proba > 0.5).astype(int)
+        
+        # Note: Test set doesn't have labels, so we can't compute accuracy/ROC-AUC
+        # But we can compute prediction statistics
+        print(f"  Prediction statistics:")
+        print(f"    Mean probability: {y_pred_proba.mean():.4f}")
+        print(f"    Std probability: {y_pred_proba.std():.4f}")
+        print(f"    Min probability: {y_pred_proba.min():.4f}")
+        print(f"    Max probability: {y_pred_proba.max():.4f}")
+        print(f"    Predicted fraud cases: {(y_pred == 1).sum()} ({(y_pred == 1).mean()*100:.2f}%)")
+        
+        # Save submission file
+        submission = pd.DataFrame({
+            'TransactionID': test_transaction_ids,
+            'isFraud': y_pred_proba
+        })
+        
+        submission_file = f'new_submission_model{i}_{timestamp}.csv'
+        submission.to_csv(submission_file, index=False)
+        print(f"  ✓ Predictions saved to {submission_file}")
+        
+        test_results.append({
+            'model_name': model_info['name'],
+            'model_num': i,
+            'mean_prob': y_pred_proba.mean(),
+            'std_prob': y_pred_proba.std(),
+            'min_prob': y_pred_proba.min(),
+            'max_prob': y_pred_proba.max(),
+            'fraud_predictions': (y_pred == 1).sum(),
+            'fraud_percentage': (y_pred == 1).mean() * 100,
+            'submission_file': submission_file
+        })
+    
+    # Step 11: Print comparison summary
+    print("\n" + "=" * 80)
+    print("TEST SET PREDICTION COMPARISON")
+    print("=" * 80)
+    print(f"\n{'Model':<40} {'Mean Prob':<12} {'Std Prob':<12} {'Fraud %':<12} {'File':<30}")
+    print("-" * 80)
+    
+    for result in test_results:
+        print(f"{result['model_name']:<40} "
+              f"{result['mean_prob']:<12.4f} "
+              f"{result['std_prob']:<12.4f} "
+              f"{result['fraud_percentage']:<12.2f} "
+              f"{result['submission_file']:<30}")
+    
+    # Generate test prediction histogram
+    print("\nGenerating test prediction histogram...")
+    plot_test_predictions_histogram(test_predictions)
+
+    
+    print("\n" + "=" * 80)
+    print("Note: Test set labels are not available, so accuracy/ROC-AUC cannot be computed.")
+    print("Comparison is based on prediction statistics and fraud detection rates.")
+    print("=" * 80)
 
     print("\n" + "=" * 80)
     print("RETRAINING COMPLETE!")
+    print("=" * 80)
+    print("\nSummary:")
+    print(f"  - Model 1 (Original): {test_results[0]['submission_file']}")
+    print(f"  - Model 2 (Original + Synthetic): {test_results[1]['submission_file']}")
+    print(f"  - Model 3 (Original + Synthetic + Adversarial): {test_results[2]['submission_file']}")
     print("=" * 80)
 
 
