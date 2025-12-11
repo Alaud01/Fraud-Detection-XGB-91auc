@@ -737,11 +737,17 @@ def main():
     adv_df = adv_df.loc[:, ~adv_df.columns.str.contains('^Unnamed')]
     
     # Ensure 'isFraud' is present (should be 1 for adversarial fraud)
-    if 'isFraud' not in adv_df.columns:
-         print("Warning: 'isFraud' not in adversarial data. Setting to 1.")
-         adv_df['isFraud'] = 1
+    # Ensure 'isFraud' is present and set to 1 for adversarial fraud
+    # The file might contain 0 if they were generated to look safe, but for training/eval they are Fraud.
+    adv_df['isFraud'] = 1
     
     print(f"Fraud cases in adversarial data: {(adv_df['isFraud'] == 1).sum()}")
+
+    # Step 1b: Split adversarial data 50/50
+    print("\nStep 1b: Splitting adversarial data 50/50 for train/test...")
+    adv_train, adv_test = train_test_split(adv_df, test_size=0.5, random_state=42)
+    print(f"  Adversarial Train shape: {adv_train.shape}")
+    print(f"  Adversarial Test shape:  {adv_test.shape}")
 
     # Step 2: Process original training data through FULL pipeline
     print("\nStep 2: Processing original training data through full pipeline...")
@@ -788,10 +794,20 @@ def main():
     print("\nStep 3: Aligning datasets and standardizing both together...")
 
     # Create TransactionIDs for adversarial data if missing
-    if 'TransactionID' not in adv_df.columns:
-        max_orig_id = train_df_orig['TransactionID'].max()
-        adv_df['TransactionID'] = range(int(max_orig_id) + 1, int(max_orig_id) + 1 + len(adv_df))
-        print("  Generated TransactionIDs for adversarial data")
+    max_orig_id = train_df_orig['TransactionID'].max()
+    # Ensure ID continuity. We assign IDs to the FULL adversarial set to ensure uniqueness if we ever used all, 
+    # but for now we just need them to have IDs.
+    
+    # Actually, we should assign IDs to adv_train and adv_test separately or just ensure they are unique
+    # Let's assign based on full dataframe to be safe and consistent
+    train_end_id = int(max_orig_id) + 1
+    adv_train['TransactionID'] = range(train_end_id, train_end_id + len(adv_train))
+    
+    # For test, continue counting
+    test_start_id = train_end_id + len(adv_train)
+    adv_test['TransactionID'] = range(test_start_id, test_start_id + len(adv_test))
+    
+    print("  Generated TransactionIDs for adversarial data")
 
     # Find common columns
     # Note: Adversarial data is already in "processed" space (LabelEncoded/Scaled) technically, 
@@ -803,7 +819,9 @@ def main():
     
     # Inspect adversarial data sample
     print("\nDEBUG: Checking adversarial data values:")
-    print(adv_df[['TransactionAmt', 'card1']].head())
+    # Inspect adversarial data sample
+    print("\nDEBUG: Checking adversarial data values:")
+    print(adv_train[['TransactionAmt', 'card1']].head())
     print("\nDEBUG: Checking original data values (LabelEncoded only):")
     print(train_df_orig[['TransactionAmt', 'card1']].head())
     
@@ -815,7 +833,9 @@ def main():
     # Let's go with option 2: Standardize original data, then assume adv_df is compatible.
     # BUT, adv_df also has PC columns? The purified clean csv might have PC columns.
     # Let's check columns.
-    adv_cols = adv_df.columns.tolist()
+    # BUT, adv_df also has PC columns? The purified clean csv might have PC columns.
+    # Let's check columns.
+    adv_cols = adv_train.columns.tolist()
     has_pc = any(c.startswith('PC') for c in adv_cols)
     print(f"  Adversarial data has PC columns: {has_pc}")
     
@@ -898,7 +918,9 @@ def main():
 
     # Align columns across all datasets
     base_cols = list(train_df_orig_pca.columns)
-    common_cols = [c for c in base_cols if c in adv_df.columns]
+    # Align columns across all datasets
+    base_cols = list(train_df_orig_pca.columns)
+    common_cols = [c for c in base_cols if c in adv_train.columns]
     
     if not tabdiff_df.empty:
         common_cols = [c for c in common_cols if c in tabdiff_df.columns]
@@ -909,8 +931,9 @@ def main():
     print(f"  Common columns: {len(common_cols)}")
     
     # Prepare aligned datasets
+    # Prepare aligned datasets
     train_df_final = train_df_orig_pca[common_cols].copy()
-    adv_df_final = adv_df[common_cols].copy()
+    adv_df_final = adv_train[common_cols].copy()
     
     # Convert to float32 to reduce memory
     for col in train_df_final.select_dtypes(include=['float64']).columns:
@@ -1306,6 +1329,121 @@ def main():
     print(f"  - Model 1 (Original): {test_results[0]['submission_file']}")
     print(f"  - Model 2 (Original + Synthetic): {test_results[1]['submission_file']}")
     print(f"  - Model 3 (Original + Synthetic + Adversarial): {test_results[2]['submission_file']}")
+    print("=" * 80)
+
+    # Step 12: Evaluate on Held-out Adversarial Data
+    print("\nStep 12: Evaluating all models on held-out adversarial data...")
+    print("=" * 80)
+    
+    adv_results = []
+    
+    # Prepare adversarial test set (adv_test)
+    # It needs to be processed like the test set: 
+    # 1. Selected common columns (from Step 4)
+    # 2. Converted to float32
+    # 3. Features matched to model
+    
+    # Filter to common columns defined in Step 4
+    # Note: adv_test might need PCA components if they are in common_cols
+    # adv_test likely already has them if adv_train did (loaded from same file)
+    
+    adv_test_processed = adv_test.copy()
+    
+    # Ensure it only has columns that are in train_df_final (plus isFraud for eval)
+    cols_to_keep_adv = [c for c in common_cols if c in adv_test_processed.columns]
+    adv_test_processed = adv_test_processed[cols_to_keep_adv]
+    
+    # Convert to float32
+    for col in adv_test_processed.select_dtypes(include=['float64']).columns:
+        adv_test_processed[col] = adv_test_processed[col].astype(np.float32)
+        
+    print(f"  Held-out adversarial set shape: {adv_test_processed.shape}")
+    print(f"  Fraud cases in held-out set: {(adv_test_processed['isFraud'] == 1).sum()}")
+    
+    for i, model_info in enumerate(models, 1):
+        print(f"\nEvaluating Model {i} on Adversarial Test Set: {model_info['name']}")
+        print("-" * 80)
+        
+        model = model_info['model']
+        
+        # Prepare X and y
+        if 'isFraud' in adv_test_processed.columns:
+            y_adv_test = adv_test_processed['isFraud']
+            X_adv_test = adv_test_processed.drop(columns=['isFraud'])
+        else:
+             # Should not happen given logic above
+            print("  Error: isFraud not found in adv_test_processed")
+            continue
+            
+        # Align features
+        try:
+            booster = model.get_booster()
+            model_features = booster.feature_names
+            
+            # Ensure all expected features are present (fill missing with 0)
+            missing = [f for f in model_features if f not in X_adv_test.columns]
+            if missing:
+                for f in missing:
+                    X_adv_test[f] = 0
+            
+            # Reorder
+            X_adv_test = X_adv_test[model_features]
+            
+        except Exception as e:
+            print(f"  Warning during feature alignment: {e}")
+            # Fallback to intersection
+            pass
+            
+        # Predict
+        y_pred = model.predict(X_adv_test)
+        y_pred_proba = model.predict_proba(X_adv_test)[:, 1]
+        
+        # Calculate Metrics
+        # Since all are fraud (1), Accuracy = Recall. Precision is 1.0 if any predicted 1, else 0 ?? 
+        # Actually standard metrics still apply
+        
+        accuracy = accuracy_score(y_adv_test, y_pred)
+        recall = recall_score(y_adv_test, y_pred) # This is the most important one: detection rate
+        roc_auc = roc_auc_score(y_adv_test, y_pred_proba) # If all are 1, ROC AUC is undefined/error?
+        
+        # NOTE: ROC-AUC requires both classes to be present. 
+        # If adv_test contains ONLY fraud, roc_auc_score will error.
+        # Let's check class distribution
+        n_fraud = (y_adv_test == 1).sum()
+        n_legit = (y_adv_test == 0).sum()
+        
+        roc_auc_str = "N/A (All Fraud)"
+        if n_legit > 0 and n_fraud > 0:
+             roc_auc_val = roc_auc_score(y_adv_test, y_pred_proba)
+             roc_auc_str = f"{roc_auc_val:.4f}"
+        else:
+             roc_auc_val = 0.0 # Placeholder
+        
+        print(f"  Accuracy (Detection Rate): {accuracy:.4f}")
+        print(f"  Recall: {recall:.4f}")
+        print(f"  Avg Predicted Prob: {y_pred_proba.mean():.4f}")
+        
+        adv_results.append({
+            'model_name': model_info['name'],
+            'accuracy': accuracy,
+            'recall': recall,
+            'avg_prob': y_pred_proba.mean()
+        })
+
+    # Print Summary for Adversarial Test
+    print("\n" + "=" * 80)
+    print("HELD-OUT ADVERSARIAL SET PERFORMANCE")
+    print("=" * 80)
+    print(f"\n{'Model':<40} {'Detection Rate':<15} {'Avg Prob':<10}")
+    print("-" * 80)
+    
+    for result in adv_results:
+        print(f"{result['model_name']:<40} "
+              f"{result['accuracy']:<15.4f} "
+              f"{result['avg_prob']:<10.4f}")
+              
+    print("\nThis measures how well the models generalize to NEW adversarial examples")
+    print("that were not seen during training.")
     print("=" * 80)
 
 

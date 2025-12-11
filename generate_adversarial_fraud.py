@@ -879,7 +879,7 @@ def main():
     # 5. Select 10% of Fraud Cases
     print("\nStep 5: Selecting 10% of Fraud Cases from Validation Set...")
     fraud_indices = y_val_split[y_val_split == 1].index
-    num_to_sample = int(len(fraud_indices) * 0.1)
+    num_to_sample = int(len(fraud_indices) * 0.2)
     selected_indices = np.random.choice(fraud_indices, num_to_sample, replace=False)
     
     print(f"Selected {len(selected_indices)} fraud cases for adversarial attack.")
